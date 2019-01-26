@@ -1,161 +1,197 @@
-#include "count.h"
-#define FSCALE 0.7        //图片分辨率缩放倍数
+//-----------------------------
+//@update
+//2019-1-26 祥恩　重写算法，改用mog2
+//-----------------------------
+//-----------------------------
+//    描述：包含头文件和命名空间
+//-----------------------------
+#include "opencv2/imgproc.hpp"
+#include "opencv2/videoio.hpp"
+#include "opencv2/highgui.hpp"
+#include "opencv2/video/background_segm.hpp"
+#include  <iostream>
+using namespace std;
+using namespace cv;
 
-int roiWidth=500*FSCALE;//roi区域宽度
-int roiHeight=280*FSCALE;//roi区域高度
-double minArea=3000;
-int number = 0; //数量
-int flag = 0;   //重复计数标志
-int erodeValue=1;
-int dilateValue = 2;
-int threValue=100;
-int gaussValue=3;
-struct contourBlock trackBlocks[20];
-Mat diffFrame,diffFrame1,diffFrame2;             //帧差图像
+//宏定义
+#define FSCALE 0.5
+
+//-------------------------------
+//     描述：全局函数声明
+//-------------------------------
+static void frameProcess();
+static void onOpen(int,void*);//开运算
+static void onClose(int,void*);//闭运算
+static void onGaussianBlur(int,void*);//高斯滤波
+
+//定义轮廓结构题
+struct  contourBlock{
+    double area;        //轮廓面积
+    Point2d mc;         //轮廓质心
+};
+
+//---------------------------------
+// 描述：全局变量的定义
+//---------------------------------
+bool isDraw=true;
+double minArea=500;
+int morphOpenValue=1;//开运算参数
+int maxMorphValue=10;//最大值
+int morphCloseValue=5;//闭运算参数
+int gaussianBulrValue=1;//高斯滤波参数
+int maxGaussianBlurValue=40;//最大值
+int number=0;           //计数值
+int countLine=150;      //计数线
+int roiLeft=40;         //Roi区域左
+int roiRight=250;       //Roi区域右
+Mat tmpFrame,bgMask;
+
 //主函数
 int main()
 {
-    Mat preFrames[2];   //存储每三帧图片队列
-    char numberText[10];//显示文本
-    Mat result;//存储处理后的结果图像
-    Mat currentFrame;//当前帧
-    Mat previousFrame;//前一帧
-    VideoCapture capture("./test2.avi");
+    char numberText[10];
+    vector<vector<Point> > contours;//轮廓容器
+    Rect boundRect;//定义Rect类型的vector容器roRect存放最小外接矩形，
+    Moments mu;
+    double contoursArea;
+    int historyLocate[10]={0};
+    struct contourBlock trackBlocks[10];
 
-    if(!capture.isOpened())
+    VideoCapture cap;
+    cap.open("nice10.avi");
+    //cap.open(0);
+    if( !cap.isOpened() )
     {
-      cout << "video open error!" << endl;
-      return -1;
+        printf("\nCan not open camera or video file\n");
+        return -1;
     }
-    //定义ROI区域
-    Rect rect;
-    rect.x=0;
-    rect.y=0;
-    rect.width=roiWidth;
-    rect.height=roiHeight;
+    cap >> tmpFrame;
+    if(tmpFrame.empty())
+    {
+        printf("can not read data from the video source\n");
+        return -1;
+    }
 
-    for(int i=0;i<20;i++)
+    Ptr<BackgroundSubtractorMOG2> bgSubTractor=createBackgroundSubtractorMOG2(100,16,false);//初始化背景减法
+
+    for(int i=0;i<10;i++)
     {
         trackBlocks[i].area=0;
         trackBlocks[i].mc=Point2d(0,0);
     }
-    //初始化两帧图片并调整分辨率,提取感兴趣区域，灰度化
-    for(int i=0;i<2;i++)
-    {
-        capture>>preFrames[i];
-        resize(preFrames[i],preFrames[i], Size(preFrames[i].cols*FSCALE,preFrames[i].rows*FSCALE), (0, 0), (0, 0), INTER_LINEAR);
-        preFrames[i]=preFrames[i](rect);
-        cvtColor(preFrames[i], preFrames[i], CV_BGR2GRAY);
-        threshold(preFrames[i], preFrames[i], threValue, 255, CV_THRESH_BINARY);
-    }
-    cout<<preFrames[0].size<<endl;//输出图片大小
-    previousFrame=preFrames[1];
-    absdiff(preFrames[1],preFrames[0],diffFrame1);//初始化第一次帧差
-
-    //展示结果输出窗口，并创建参数调整滑动条
-    namedWindow("result",WINDOW_NORMAL);
-    createTrackbar("threshold","result",&threValue,255,onValue);
-    createTrackbar("erode","result",&erodeValue,21,onValue);
-    createTrackbar("gaussian","result",&gaussValue,50,onValue);
-    createTrackbar("dilate","result",&dilateValue,21,onValue);
-
-    Mat OriginFrame;
-    //主循环
+    namedWindow("mask",WINDOW_NORMAL);
+   // createTrackbar("开运算参数","mask",&morphOpenValue,maxMorphValue*2+1,onOpen);
+    createTrackbar("闭运算参数","mask",&morphCloseValue,maxMorphValue*2+1,onClose);
+    createTrackbar("高斯滤波参数","mask",&gaussianBulrValue,maxGaussianBlurValue*2+1,onGaussianBlur);
+    double start;
+    double t1;
+    double t2;
+    int flag=1;
     while(true)
-      {
-        capture >> currentFrame;//读帧进frames
-        OriginFrame=currentFrame.clone();
-        if (currentFrame.empty())//对当前帧进行异常检测
-        {
-          cout << "frame is empty!" << endl;
-          break;
-        }
-        resize(currentFrame,currentFrame, Size(currentFrame.cols*FSCALE,currentFrame.rows*FSCALE), (0, 0), (0, 0), INTER_LINEAR);//重新调整图像大小
-        currentFrame=currentFrame(rect);                 //提取感兴趣区域
-        cvtColor(currentFrame,currentFrame,CV_BGR2GRAY); //灰度化
-        threshold(currentFrame, currentFrame, threValue, 255, CV_THRESH_BINARY);    //二值化
-
-        absdiff(currentFrame, previousFrame, diffFrame2);        //图像帧差
-        add(diffFrame1,diffFrame2,diffFrame);
-
-        result = moveDetect();      //目标检测处理
-
-        sprintf(numberText,"%d",number);
-        putText(OriginFrame,numberText,Point(100,150),FONT_HERSHEY_SIMPLEX,5,Scalar(255,23,0),4,8);//显示数量
-        rectangle(OriginFrame,rect,Scalar(0, 0, 255),2);//画感兴趣区域ROI
-        imshow("OriginVideo",OriginFrame);
-        cvResizeWindow("OriginVideo",640,480);
-
-        cvResizeWindow("result",640,480);
-        imshow("result", result);
-
-        if (waitKey(30) == 27)//按原FPS显示
-        {
-          cout << "ESC退出!" << endl;
-          break;
-        }
-        previousFrame=currentFrame.clone();
-        diffFrame1=diffFrame2.clone();
-      }
-   return 0;
-
-}
-
-//目标检测
-Mat moveDetect()
-{
-    int j=0;
-    double contoursArea;              //轮廓面积
-    onValue(threValue,0);             //调整二值化
-    onValue(erodeValue,0);            //腐蚀
-    onValue(gaussValue,0);            //高斯滤波
-    onValue(dilateValue,0);           //膨胀
-    //Canny(diffFrame,diffFrame,100,200,3);//边缘检测
-    Mat result=diffFrame.clone();
-    //查找轮廓
-    vector<vector<Point> > contours;//轮廓容器
-    findContours(diffFrame, contours, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_NONE);
-    //drawContours(result, contours, -1, Scalar(0, 255, 0), 1,8);//在result上绘制轮廓
-
-    //查找正外接矩形
-    Rect boundRect;
-    //定义Rect类型的vector容器roRect存放最小外接矩形，初始化大小为contours.size()即轮廓个数
-
-    //获得满足条件的轮廓,质心,面积
-    Moments mu;
-    for(int i=0;i < contours.size();i++)
     {
-        contoursArea=contourArea(contours[i]);
-        if(contoursArea>minArea)
+        cap >> tmpFrame;
+        start = getTickCount();//开始时间
+        resize(tmpFrame,tmpFrame, Size(tmpFrame.cols*FSCALE,tmpFrame.rows*FSCALE), (0, 0), (0, 0), INTER_LINEAR);//调整图片分辨率
+        if( tmpFrame.empty() )
+            break;
+        bgSubTractor->apply(tmpFrame, bgMask, 0.01);//learningrate越大，背景更新越快
+        t1=getTickCount();
+
+        frameProcess();
+        findContours(bgMask, contours, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_NONE);
+
+        //获得满足条件的轮廓,质心,面积
+        int j=0;
+        for(int i=0;i < contours.size();i++)
         {
-            //cout<<contoursArea<<endl;
-            trackBlocks[j].area=contoursArea;
-            mu = moments(contours[i], false );
-            trackBlocks[j].mc=Point2d( mu.m10/mu.m00 , mu.m01/mu.m00 );
-            boundRect = boundingRect(Mat(contours[i]));//获取目标序列号放置位置
-            j++;
-            rectangle(result, boundRect, Scalar(255, 0, 0), 2, 8);
-            if(j>=19)
-                break;
-        }
-    }
-    //计数，防止重复计数
-    for (int i = 0; i < j+1; i++)
-      {
-        if(trackBlocks[i].mc.y>=roiHeight)
+            contoursArea=contourArea(contours[i]);
+            if(contoursArea>minArea)
             {
-              number++;
+                //cout<<contoursArea<<endl;
+                trackBlocks[j].area=contoursArea;
+                mu = moments(contours[i], false );
+                trackBlocks[j].mc=Point2d( mu.m10/mu.m00 , mu.m01/mu.m00 );
+                if(isDraw)//判断是否画矩形or质心
+                {
+                    circle(tmpFrame, trackBlocks[j].mc, 3,Scalar(0,0,255),1); //画质心
+                    //boundRect = boundingRect(Mat(contours[i]));//获取矩形轮廓
+                    //rectangle(bgMask, boundRect, Scalar(255, 0, 0), 2, 8);//画外接矩形
+                }
+                j++;
+                if(j>9)
+                    break;
             }
-       }
-    return result;//返回result
+         }
+
+        //防止重复计数
+        for(int i=0;i<j;i++)
+        {
+            if(trackBlocks[i].mc.x>roiLeft&&trackBlocks[i].mc.x<roiRight)
+                if(historyLocate[i]<countLine&&trackBlocks[i].mc.y>countLine)
+                    number++;
+            historyLocate[i]=trackBlocks[i].mc.y;
+        }
+
+        if(isDraw)
+        {
+            //显示
+            line(tmpFrame,Point(roiLeft,countLine),Point(roiRight,countLine),Scalar(255,0,0),1);//下边界
+            line(tmpFrame,Point(roiLeft,0),Point(roiLeft,countLine),Scalar(255,0,0),1);//左边界
+            line(tmpFrame,Point(roiRight,0),Point(roiRight,countLine),Scalar(255,0,0),1);//右边界
+        }
+        sprintf(numberText,"%d",number);
+        putText(tmpFrame,numberText,Point(100*FSCALE,150*FSCALE),FONT_HERSHEY_SIMPLEX,2,Scalar(255,23,0),4,8);//显示数量
+        imshow("mask",tmpFrame);
+        cvResizeWindow("mask",640,480);
+        imshow("process",bgMask);
+        t2=getTickCount();
+        t2=(t2-t1)*1000/getTickFrequency();
+        t1=(t1-start)*1000/getTickFrequency();
+        flag++;
+        if(flag==100)
+        {
+            cout<<"t1:"<<t1<<"ms"<<endl;
+            cout<<"t2:"<<t2<<"ms"<<endl;
+            cout<<tmpFrame.size<<endl;
+        }
+        if( waitKey(30)== 27 )
+            break;
+    }
+    cap.release();
+    destroyWindow("mask");
+    return 0;
 }
 
-static void onValue(int,void*)
+//对获得的帧差图片进一步处理
+static void frameProcess()
 {
-   //threshold(diff, diff_thresh, threValue, 255, CV_THRESH_BINARY);
-   Mat kernelErode = getStructuringElement(MORPH_RECT, Size(erodeValue,erodeValue));
-   Mat kernelDilate = getStructuringElement(MORPH_RECT, Size(dilateValue, dilateValue));
-   erode(diffFrame, diffFrame, kernelErode);
-   GaussianBlur(diffFrame,diffFrame,Size(gaussValue*2+1,gaussValue*2+1),0,0);
-   dilate(diffFrame, diffFrame, kernelDilate);
+   onClose(morphCloseValue,0);
+   //onOpen(morphOpenValue,0);//效果差，没必要
+   onGaussianBlur(gaussianBulrValue,0);//除噪点
+}
+
+//开运算
+static void onOpen(int,void*)
+{
+   Mat KrenelElement = getStructuringElement(MORPH_RECT,Size(morphOpenValue,morphOpenValue));
+   morphologyEx(bgMask,bgMask,MORPH_OPEN,KrenelElement);//开运算
+}
+
+//闭运算
+static void onClose(int,void*)
+{
+   Mat KrenelElement = getStructuringElement(MORPH_RECT,Size(morphCloseValue,morphCloseValue));
+   morphologyEx(bgMask,bgMask,MORPH_CLOSE,KrenelElement);//开运算
+}
+
+//高斯滤波
+static void onGaussianBlur(int,void*)
+{
+    GaussianBlur(bgMask,bgMask,Size(gaussianBulrValue*2+1,gaussianBulrValue*2+1),0,0);
+}
+
+//计数算法，未用
+static int countBlocks()
+{
+    return 0;
 }

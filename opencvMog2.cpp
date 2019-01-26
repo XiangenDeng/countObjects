@@ -59,6 +59,7 @@ int main()
 
     VideoCapture cap;
     cap.open("nice10.avi");
+    //cap.open(0);
     if( !cap.isOpened() )
     {
         printf("\nCan not open camera or video file\n");
@@ -82,14 +83,19 @@ int main()
    // createTrackbar("开运算参数","mask",&morphOpenValue,maxMorphValue*2+1,onOpen);
     createTrackbar("闭运算参数","mask",&morphCloseValue,maxMorphValue*2+1,onClose);
     createTrackbar("高斯滤波参数","mask",&gaussianBulrValue,maxGaussianBlurValue*2+1,onGaussianBlur);
-
+    double start;
+    double t1;
+    double t2;
+    int flag=1;
     while(true)
     {
         cap >> tmpFrame;
+        start = getTickCount();//开始时间
         resize(tmpFrame,tmpFrame, Size(tmpFrame.cols*FSCALE,tmpFrame.rows*FSCALE), (0, 0), (0, 0), INTER_LINEAR);//调整图片分辨率
         if( tmpFrame.empty() )
             break;
         bgSubTractor->apply(tmpFrame, bgMask, 0.01);//learningrate越大，背景更新越快
+        t1=getTickCount();
 
         frameProcess();
         findContours(bgMask, contours, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_NONE);
@@ -137,6 +143,17 @@ int main()
         putText(tmpFrame,numberText,Point(100*FSCALE,150*FSCALE),FONT_HERSHEY_SIMPLEX,2,Scalar(255,23,0),4,8);//显示数量
         imshow("mask",tmpFrame);
         cvResizeWindow("mask",640,480);
+        imshow("process",bgMask);
+        t2=getTickCount();
+        t2=(t2-t1)*1000/getTickFrequency();
+        t1=(t1-start)*1000/getTickFrequency();
+        flag++;
+        if(flag==100)
+        {
+            cout<<"t1:"<<t1<<"ms"<<endl;
+            cout<<"t2:"<<t2<<"ms"<<endl;
+            cout<<tmpFrame.size<<endl;
+        }
         if( waitKey(30)== 27 )
             break;
     }
@@ -173,7 +190,7 @@ static void onGaussianBlur(int,void*)
     GaussianBlur(bgMask,bgMask,Size(gaussianBulrValue*2+1,gaussianBulrValue*2+1),0,0);
 }
 
-//计数算法
+//计数算法，未用
 static int countBlocks()
 {
     return 0;
